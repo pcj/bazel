@@ -85,12 +85,15 @@ import net.starlark.java.eval.StarlarkInt;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.eval.StarlarkValue;
+import net.starlark.java.eval.Structure;
 import net.starlark.java.eval.SymbolGenerator;
 import net.starlark.java.lib.json.Json;
 import net.starlark.java.syntax.Argument;
+import net.starlark.java.syntax.AssignmentStatement;
 import net.starlark.java.syntax.Location;
 import net.starlark.java.syntax.Identifier;
 import net.starlark.java.syntax.CallExpression;
+import net.starlark.java.syntax.DocComments;
 import net.starlark.java.syntax.DotExpression;
 import net.starlark.java.syntax.Expression;
 import net.starlark.java.syntax.ExpressionStatement;
@@ -352,6 +355,11 @@ public class StarlarkEvaluator {
 
     logger.atFine().log("\n\nresolving module globals: %s", label);
 
+    // Scan top-level `<name> = struct(...)` assignments so resolveGlobals can
+    // emit a Struct proto for each public namespace export.
+    ImmutableMap<String, StructAstInfo> structAstInfos = scanTopLevelStructAssignments(file);
+    String moduleDocstring = getModuleDoc(file);
+
     resolveGlobals(
         module,
         label,
@@ -369,6 +377,8 @@ public class StarlarkEvaluator {
         macroInfoList,
         repositoryRuleInfoList,
         moduleExtensionInfoList,
+        structAstInfos,
+        moduleDocstring,
         starlarkModule);
 
     logger.atFine().log("post-eval rules: %s", ruleInfoMap.build().keySet());
@@ -392,6 +402,8 @@ public class StarlarkEvaluator {
       List<MacroInfoWrapper> macroInfoList,
       List<RepositoryRuleInfoWrapper> repositoryRuleInfoList,
       List<ModuleExtensionInfoWrapper> moduleExtensionInfoList,
+      ImmutableMap<String, StructAstInfo> structAstInfos,
+      String moduleDocstring,
       StarlarkProtos.Module.Builder starlarkModule)
       throws InterruptedException, IOException, LabelSyntaxException, EvalException, StarlarkEvaluationException {
 
@@ -549,12 +561,76 @@ public class StarlarkEvaluator {
         starlarkModule.addSymbolLocation(symbolLocation);
       }
 
-      // +++ STRUCTS
-      if (envEntry.getValue() instanceof FakeStructApi) {
+      // +++ STRUCTS — walk the live struct to register qualified-name functions
+      // (paths.basename → _basename). Gated on the AST scan so we don't recurse
+      // into arbitrary Structure-typed globals like `my_proxy = native`. The
+      // AST gate guarantees the binding came from a `<name> = struct(...)`
+      // source-level literal. FakeDeepStructure also implements Structure but
+      // its getFieldNames() is empty, so it's a no-op there.
+      if (envEntry.getValue() instanceof Structure
+          && structAstInfos.containsKey(envEntry.getKey())) {
         String namespaceName = envEntry.getKey();
-        FakeStructApi namespace = (FakeStructApi) envEntry.getValue();
+        Structure namespace = (Structure) envEntry.getValue();
         logger.atFine().log("global struct %s.%s", namespaceName, namespace);
         putStructFields(namespaceName, namespace, userDefinedFunctionMap);
+      }
+
+      // +++ STRUCT PROTO EMISSION
+      // Emit a top-level Struct proto for any public global whose source-level
+      // RHS was a `struct(...)` call. This is independent of the runtime value
+      // type: real `struct(...)` calls produce a StarlarkInfo (StructImpl), not
+      // a FakeStructApi, so we key off the AST scan rather than instanceof.
+      // Skip private names to match the proto's intent.
+      {
+        String namespaceName = envEntry.getKey();
+        StructAstInfo astInfo = structAstInfos.get(namespaceName);
+        if (astInfo != null && !namespaceName.startsWith("_")) {
+          StarlarkProtos.SymbolLocation structLocation = StarlarkProtos.SymbolLocation.newBuilder()
+              .setName(namespaceName)
+              .setStart(StarlarkProtos.Position.newBuilder()
+                  .setLine(astInfo.location.line())
+                  .setCharacter(astInfo.location.column())
+                  .build())
+              .setEnd(StarlarkProtos.Position.newBuilder()
+                  .setLine(astInfo.location.line())
+                  .setCharacter(astInfo.location.column())
+                  .build())
+              .build();
+
+          String docString = astInfo.docString;
+          if (docString.isEmpty()) {
+            docString = moduleDocstring;
+          }
+
+          StarlarkProtos.Struct.Builder structBuilder = StarlarkProtos.Struct.newBuilder()
+              .setName(namespaceName)
+              .setLocation(structLocation)
+              .setDocString(docString)
+              .setOriginFile(label.getCanonicalForm());
+
+          for (StructFieldAstInfo field : astInfo.fields) {
+            StarlarkProtos.SymbolLocation fieldLocation = StarlarkProtos.SymbolLocation.newBuilder()
+                .setName(field.name)
+                .setStart(StarlarkProtos.Position.newBuilder()
+                    .setLine(field.location.line())
+                    .setCharacter(field.location.column())
+                    .build())
+                .setEnd(StarlarkProtos.Position.newBuilder()
+                    .setLine(field.location.line())
+                    .setCharacter(field.location.column())
+                    .build())
+                .build();
+            structBuilder.addField(StarlarkProtos.StructField.newBuilder()
+                .setName(field.name)
+                .setLocation(fieldLocation)
+                .setTargetSymbol(field.targetSymbol)
+                .setQualifiedName(namespaceName + "." + field.name)
+                .build());
+          }
+
+          starlarkModule.addStruct(structBuilder.build());
+          starlarkModule.addSymbolLocation(structLocation);
+        }
       }
 
       // +++ GLOBAL SCALARS (string, int, bool, list)
@@ -1417,18 +1493,100 @@ public class StarlarkEvaluator {
    * "outernamespace.innernamespace.func"}. {@code namespaceName} is the fully
    * qualified name of {@code namespace} itself.
    */
-  private static void putStructFields(String namespaceName, FakeStructApi namespace,
+  private static void putStructFields(String namespaceName, Structure namespace,
       ImmutableMap.Builder<String, StarlarkFunction> userDefinedFunctionMap) throws EvalException {
     for (String field : namespace.getFieldNames()) {
+      Object value = namespace.getValue(field);
       String qualifiedFieldName = namespaceName + "." + field;
-      if (namespace.getValue(field) instanceof StarlarkFunction) {
-        StarlarkFunction userDefinedFunction = (StarlarkFunction) namespace.getValue(field);
-        userDefinedFunctionMap.put(qualifiedFieldName, userDefinedFunction);
-      } else if (namespace.getValue(field) instanceof FakeStructApi) {
-        FakeStructApi innerNamespace = (FakeStructApi) namespace.getValue(field);
-        putStructFields(qualifiedFieldName, innerNamespace, userDefinedFunctionMap);
+      if (value instanceof StarlarkFunction) {
+        userDefinedFunctionMap.put(qualifiedFieldName, (StarlarkFunction) value);
+      } else if (value instanceof Structure) {
+        putStructFields(qualifiedFieldName, (Structure) value, userDefinedFunctionMap);
       }
     }
+  }
+
+  /** Captures the source-level shape of a top-level `<name> = struct(...)` assignment. */
+  private static final class StructAstInfo {
+    final String name;
+    final Location location;
+    final String docString;
+    final ImmutableList<StructFieldAstInfo> fields;
+
+    StructAstInfo(String name, Location location, String docString, ImmutableList<StructFieldAstInfo> fields) {
+      this.name = name;
+      this.location = location;
+      this.docString = docString;
+      this.fields = fields;
+    }
+  }
+
+  private static final class StructFieldAstInfo {
+    final String name;
+    final Location location;
+    final String targetSymbol; // empty when RHS is not a bare identifier
+
+    StructFieldAstInfo(String name, Location location, String targetSymbol) {
+      this.name = name;
+      this.location = location;
+      this.targetSymbol = targetSymbol;
+    }
+  }
+
+  /**
+   * Scans a parsed .bzl file for top-level `<name> = struct(...)` assignments and
+   * returns a map keyed by exported name. Private names (starting with `_`) are
+   * skipped. Only ordinary (non-augmented) assignments whose LHS is a bare
+   * Identifier and whose RHS is a CallExpression to an Identifier `struct` are
+   * considered.
+   */
+  private static ImmutableMap<String, StructAstInfo> scanTopLevelStructAssignments(StarlarkFile file) {
+    ImmutableMap.Builder<String, StructAstInfo> result = ImmutableMap.builder();
+    for (Statement stmt : file.getStatements()) {
+      if (!(stmt instanceof AssignmentStatement)) {
+        continue;
+      }
+      AssignmentStatement assign = (AssignmentStatement) stmt;
+      if (assign.getOperator() != null) {
+        continue; // augmented assignment (+=, etc.) - not a fresh struct binding
+      }
+      Expression lhs = assign.getLHS();
+      if (!(lhs instanceof Identifier)) {
+        continue;
+      }
+      String name = ((Identifier) lhs).getName();
+      if (name.startsWith("_")) {
+        continue;
+      }
+      Expression rhs = assign.getRHS();
+      if (!(rhs instanceof CallExpression)) {
+        continue;
+      }
+      CallExpression call = (CallExpression) rhs;
+      Expression callee = call.getFunction();
+      if (!(callee instanceof Identifier) || !"struct".equals(((Identifier) callee).getName())) {
+        continue;
+      }
+      DocComments docComments = assign.getDocComments();
+      String docString = (docComments != null) ? docComments.getText() : "";
+      ImmutableList.Builder<StructFieldAstInfo> fields = ImmutableList.builder();
+      for (Argument arg : call.getArguments()) {
+        if (!(arg instanceof Argument.Keyword)) {
+          continue;
+        }
+        Argument.Keyword kw = (Argument.Keyword) arg;
+        String fieldName = kw.getName();
+        Location fieldLoc = kw.getIdentifier().getStartLocation();
+        String targetSymbol = "";
+        Expression value = kw.getValue();
+        if (value instanceof Identifier) {
+          targetSymbol = ((Identifier) value).getName();
+        }
+        fields.add(new StructFieldAstInfo(fieldName, fieldLoc, targetSymbol));
+      }
+      result.put(name, new StructAstInfo(name, assign.getStartLocation(), docString, fields.build()));
+    }
+    return result.buildOrThrow();
   }
 
   private static String getModuleDoc(StarlarkFile buildFileAST) {
