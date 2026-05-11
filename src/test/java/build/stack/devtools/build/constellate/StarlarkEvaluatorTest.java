@@ -472,4 +472,114 @@ public class StarlarkEvaluatorTest {
     // Check module docstring
     assertTrue("Module docstring should not be empty", moduleInfo.getModuleDocstring().length() > 0);
   }
+
+  /**
+   * Evaluates a .bzl file and returns the populated proto Module builder, so tests
+   * can inspect fields that aren't surfaced through TestModuleInfo (e.g. the new
+   * Struct entries for `<name> = struct(...)` namespace exports).
+   */
+  private build.stack.starlark.v1beta1.StarlarkProtos.Module.Builder evaluateFileProto(String filename)
+      throws Exception {
+    Path testFile = Paths.get(TEST_DATA_DIR, filename);
+    assertTrue("Test file not found: " + testFile, Files.exists(testFile));
+
+    OptionsParser parser = OptionsParser.builder().optionsClasses(BuildLanguageOptions.class).build();
+    BuildLanguageOptions semanticsOptions = parser.getOptions(BuildLanguageOptions.class);
+    StarlarkSemantics semantics = semanticsOptions.toStarlarkSemantics();
+
+    StarlarkEvaluator evaluator = new StarlarkEvaluator(
+        semantics,
+        new FilesystemFileAccessor(),
+        /* depRoots= */ ImmutableList.of());
+
+    Label label = Label.parseCanonicalUnchecked("//test:" + filename);
+
+    ImmutableMap.Builder<String, RuleInfo> ruleInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<String, ProviderInfo> providerInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<String, StarlarkFunction> userDefinedFunctions = ImmutableMap.builder();
+    ImmutableMap.Builder<String, AspectInfo> aspectInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<String, RepositoryRuleInfo> repositoryRuleInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<String, ModuleExtensionInfo> moduleExtensionInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<String, MacroInfo> macroInfoMap = ImmutableMap.builder();
+    ImmutableMap.Builder<Label, String> moduleDocMap = ImmutableMap.builder();
+    ImmutableMap.Builder<Label, Map<String, Object>> globals = ImmutableMap.builder();
+
+    ParserInput input = ParserInput.fromLatin1(Files.readAllBytes(testFile), filename);
+
+    build.stack.starlark.v1beta1.StarlarkProtos.Module.Builder moduleBuilder =
+        build.stack.starlark.v1beta1.StarlarkProtos.Module.newBuilder();
+
+    evaluator.eval(
+        input,
+        label,
+        ruleInfoMap,
+        providerInfoMap,
+        userDefinedFunctions,
+        aspectInfoMap,
+        repositoryRuleInfoMap,
+        moduleExtensionInfoMap,
+        macroInfoMap,
+        moduleDocMap,
+        moduleBuilder,
+        globals);
+
+    return moduleBuilder;
+  }
+
+  @Test
+  public void testStructNamespace() throws Exception {
+    build.stack.starlark.v1beta1.StarlarkProtos.Module.Builder module =
+        evaluateFileProto("struct_namespace_test.bzl");
+
+    // Exactly one public namespace struct is emitted.
+    assertEquals(1, module.getStructCount());
+    build.stack.starlark.v1beta1.StarlarkProtos.Struct paths = module.getStruct(0);
+    assertEquals("paths", paths.getName());
+
+    // Module docstring fallback fires when the assignment has no `#:` doc comments.
+    assertEquals(
+        "Namespace module that re-exports private helpers via a public struct.",
+        paths.getDocString());
+
+    // origin_file is the canonical form of the file label.
+    assertFalse("origin_file should be set", paths.getOriginFile().isEmpty());
+
+    // Source-order fields with target_symbol pointing to the private functions
+    // and qualified_name matching the existing Module.function naming.
+    assertEquals(3, paths.getFieldCount());
+
+    assertEquals("basename", paths.getField(0).getName());
+    assertEquals("_basename", paths.getField(0).getTargetSymbol());
+    assertEquals("paths.basename", paths.getField(0).getQualifiedName());
+
+    assertEquals("dirname", paths.getField(1).getName());
+    assertEquals("_dirname", paths.getField(1).getTargetSymbol());
+    assertEquals("paths.dirname", paths.getField(1).getQualifiedName());
+
+    assertEquals("join", paths.getField(2).getName());
+    assertEquals("_join", paths.getField(2).getTargetSymbol());
+    assertEquals("paths.join", paths.getField(2).getQualifiedName());
+
+    // Location refers to the assignment line (the `paths = struct(...)` line).
+    assertEquals(12, paths.getLocation().getStart().getLine());
+
+    // Each StructField is also emitted as a qualified-name Function entry
+    // (paths.basename, paths.dirname, paths.join) so downstream renderers
+    // have function-level docs (params, return) when the user clicks a field.
+    // The private originals (_basename, etc.) are still emitted under their
+    // private names — both entries reference the same underlying StarlarkFunction.
+    TestModuleInfo moduleInfo = evaluateFile("struct_namespace_test.bzl");
+    java.util.Map<String, StarlarkFunctionInfo> fnByName = new java.util.HashMap<>();
+    for (StarlarkFunctionInfo fn : moduleInfo.getFuncInfoList()) {
+      fnByName.put(fn.getFunctionName(), fn);
+    }
+    assertTrue("paths.basename should be emitted as a qualified Function",
+        fnByName.containsKey("paths.basename"));
+    assertTrue("paths.dirname should be emitted as a qualified Function",
+        fnByName.containsKey("paths.dirname"));
+    assertTrue("paths.join should be emitted as a qualified Function",
+        fnByName.containsKey("paths.join"));
+    assertTrue("_basename should still be emitted under its private name",
+        fnByName.containsKey("_basename"));
+  }
 }

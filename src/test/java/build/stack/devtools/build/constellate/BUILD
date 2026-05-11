@@ -11,7 +11,7 @@ java_test(
     srcs = ["StarlarkEvaluatorTest.java"],
     data = ["//src/test/java/build/stack/devtools/build/constellate/testdata"],
     deps = [
-        "//src/main/java/build/stack/devtools/build/constellate:constellate_lib",
+        "//src/main/java/build/stack/devtools/build/constellate:evaluator_lib",
         "//src/main/java/build/stack/devtools/build/constellate/rendering",
         "//src/main/java/build/stack/starlark/v1beta1:starlark_java_proto",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
@@ -33,7 +33,7 @@ java_test(
     srcs = ["DebugTest.java"],
     data = ["//src/test/java/build/stack/devtools/build/constellate/testdata"],
     deps = [
-        "//src/main/java/build/stack/devtools/build/constellate:constellate_lib",
+        "//src/main/java/build/stack/devtools/build/constellate:evaluator_lib",
         "//src/main/java/build/stack/starlark/v1beta1:starlark_java_proto",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/packages/semantics",
