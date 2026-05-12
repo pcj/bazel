@@ -28,6 +28,21 @@ java_test(
 )
 
 java_test(
+    name = "BuildFileEvaluatorTest",
+    size = "small",
+    srcs = ["BuildFileEvaluatorTest.java"],
+    data = ["//src/test/java/build/stack/devtools/build/constellate/testdata"],
+    deps = [
+        "//src/main/java/build/stack/devtools/build/constellate:evaluator_lib",
+        "//src/main/java/build/stack/starlark/v1beta1:starlark_java_proto",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/net/starlark/java/syntax",
+        "//third_party:junit4",
+        "@maven//:junit_junit",
+    ],
+)
+
+java_test(
     name = "DebugTest",
     size = "small",
     srcs = ["DebugTest.java"],

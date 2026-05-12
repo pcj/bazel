@@ -16,6 +16,7 @@ filegroup(
 java_library(
     name = "evaluator_lib",
     srcs = [
+        "BuildFileEvaluator.java",
         "FilesystemFileAccessor.java",
         "HybridFileAccessor.java",
         "RealObjectEnhancer.java",
