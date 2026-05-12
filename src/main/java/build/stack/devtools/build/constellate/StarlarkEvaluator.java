@@ -381,7 +381,7 @@ public class StarlarkEvaluator {
         moduleDocstring,
         starlarkModule);
 
-    logger.atFine().log("post-eval rules: %s", ruleInfoMap.build().keySet());
+    logger.atFine().log("post-eval rules: %s", ruleInfoMap.buildKeepingLast().keySet());
 
     return module;
   }
@@ -424,6 +424,21 @@ public class StarlarkEvaluator {
 
     Map<Object, ModuleExtensionInfoWrapper> moduleExtensionObjects = moduleExtensionInfoList.stream()
         .collect(Collectors.toMap(ModuleExtensionInfoWrapper::getIdentifierObject, Functions.identity()));
+
+    // Track which keys we've already put into each caller-supplied ImmutableMap.Builder.
+    // ImmutableMap.Builder defers duplicate detection until build() time, so without
+    // these Sets a duplicate key (e.g. _my_rule and my_rule both aliased to the same
+    // rule() callable) silently accumulates and then explodes when the consumer calls
+    // .build() — see the try/catch blocks below, which were dead code (Guava's
+    // Builder.put doesn't throw). This is "keep first" semantics: the first binding
+    // for a given key wins.
+    Set<String> seenRuleNames = new HashSet<>();
+    Set<String> seenProviderNames = new HashSet<>();
+    Set<String> seenFunctionNames = new HashSet<>();
+    Set<String> seenAspectNames = new HashSet<>();
+    Set<String> seenMacroNames = new HashSet<>();
+    Set<String> seenRepositoryRuleNames = new HashSet<>();
+    Set<String> seenModuleExtensionNames = new HashSet<>();
 
     // Sort the globals bindings by name.
     TreeMap<String, Object> sortedBindings = new TreeMap<>(module.getGlobals());
@@ -485,13 +500,11 @@ public class StarlarkEvaluator {
         RuleInfo ruleInfo = ruleInfoBuilder.build();
         Location loc = wrapper.getLocation();
         logger.atFine().log("global rule %s from %s", ruleInfo.getRuleName(), label);
-        try {
+        if (seenRuleNames.add(ruleInfo.getRuleName())) {
           ruleInfoMap.put(ruleInfo.getRuleName(), ruleInfo);
-        } catch (IllegalArgumentException e) {
-          // ImmutableMap.Builder throws IllegalArgumentException on duplicate keys
-          // Log the duplicate and skip it (use the first definition)
-          logger.atWarning().log("Duplicate rule definition for '%s' in %s (keeping first definition). Error: %s",
-              ruleInfo.getRuleName(), label, e.getMessage());
+        } else {
+          logger.atWarning().log("Duplicate rule definition for '%s' in %s (keeping first definition)",
+              ruleInfo.getRuleName(), label);
         }
         StarlarkProtos.SymbolLocation symbolLocation = StarlarkProtos.SymbolLocation.newBuilder()
             .setName(ruleInfo.getRuleName())
@@ -524,11 +537,11 @@ public class StarlarkEvaluator {
         ProviderInfo providerInfo = providerInfoBuild.build();
         Location loc = wrapper.getLocation();
         logger.atFine().log("global provider %s from %s", envEntry.getKey(), label);
-        try {
+        if (seenProviderNames.add(envEntry.getKey())) {
           providerInfoMap.put(envEntry.getKey(), providerInfo);
-        } catch (IllegalArgumentException e) {
-          logger.atWarning().log("Duplicate provider definition for '%s' in %s (keeping first definition). Error: %s",
-              envEntry.getKey(), label, e.getMessage());
+        } else {
+          logger.atWarning().log("Duplicate provider definition for '%s' in %s (keeping first definition)",
+              envEntry.getKey(), label);
         }
         StarlarkProtos.SymbolLocation symbolLocation = StarlarkProtos.SymbolLocation.newBuilder()
             .setName(envEntry.getKey())
@@ -549,7 +562,9 @@ public class StarlarkEvaluator {
           // Even without **kwargs, we should track name parameter forwarding
           resolveFunctionNameForwarding(module, envEntry.getKey(), userDefinedFunction, calledWithName);
         }
-        userDefinedFunctionMap.put(envEntry.getKey(), userDefinedFunction);
+        if (seenFunctionNames.add(envEntry.getKey())) {
+          userDefinedFunctionMap.put(envEntry.getKey(), userDefinedFunction);
+        }
 
         // Add symbol location for function
         Location loc = userDefinedFunction.getLocation();
@@ -657,11 +672,11 @@ public class StarlarkEvaluator {
 
         AspectInfo aspectInfo = aspectInfoBuild.build();
         logger.atFine().log("global aspect %s from %s", envEntry.getKey(), label);
-        try {
+        if (seenAspectNames.add(envEntry.getKey())) {
           aspectInfoMap.put(envEntry.getKey(), aspectInfo);
-        } catch (IllegalArgumentException e) {
-          logger.atWarning().log("Duplicate aspect definition for '%s' in %s (keeping first definition). Error: %s",
-              envEntry.getKey(), label, e.getMessage());
+        } else {
+          logger.atWarning().log("Duplicate aspect definition for '%s' in %s (keeping first definition)",
+              envEntry.getKey(), label);
         }
 
         // Add symbol location for aspect
@@ -690,11 +705,11 @@ public class StarlarkEvaluator {
         MacroInfo macroInfo = macroInfoBuild.build();
         Location loc = wrapper.getLocation();
         logger.atFine().log("global macro %s from %s", envEntry.getKey(), label);
-        try {
+        if (seenMacroNames.add(envEntry.getKey())) {
           macroInfoMap.put(envEntry.getKey(), macroInfo);
-        } catch (IllegalArgumentException e) {
-          logger.atWarning().log("Duplicate macro definition for '%s' in %s (keeping first definition). Error: %s",
-              envEntry.getKey(), label, e.getMessage());
+        } else {
+          logger.atWarning().log("Duplicate macro definition for '%s' in %s (keeping first definition)",
+              envEntry.getKey(), label);
         }
         StarlarkProtos.SymbolLocation symbolLocation = StarlarkProtos.SymbolLocation.newBuilder()
             .setName(macroInfo.getMacroName())
@@ -720,12 +735,12 @@ public class StarlarkEvaluator {
         RepositoryRuleInfo repositoryRuleInfo = repositoryRuleInfoBuild.build();
         Location loc = wrapper.getLocation();
         logger.atFine().log("global repository_rule %s from %s", envEntry.getKey(), label);
-        try {
+        if (seenRepositoryRuleNames.add(envEntry.getKey())) {
           repositoryRuleInfoMap.put(envEntry.getKey(), repositoryRuleInfo);
-        } catch (IllegalArgumentException e) {
+        } else {
           logger.atWarning().log(
-              "Duplicate repository_rule definition for '%s' in %s (keeping first definition). Error: %s",
-              envEntry.getKey(), label, e.getMessage());
+              "Duplicate repository_rule definition for '%s' in %s (keeping first definition)",
+              envEntry.getKey(), label);
         }
         StarlarkProtos.SymbolLocation symbolLocation = StarlarkProtos.SymbolLocation.newBuilder()
             .setName(repositoryRuleInfo.getRuleName())
@@ -751,12 +766,12 @@ public class StarlarkEvaluator {
         ModuleExtensionInfo moduleExtensionInfo = moduleExtensionInfoBuild.build();
         Location loc = wrapper.getLocation();
         logger.atFine().log("global module_extension %s from %s", envEntry.getKey(), label);
-        try {
+        if (seenModuleExtensionNames.add(envEntry.getKey())) {
           moduleExtensionInfoMap.put(envEntry.getKey(), moduleExtensionInfo);
-        } catch (IllegalArgumentException e) {
+        } else {
           logger.atWarning().log(
-              "Duplicate module_extension definition for '%s' in %s (keeping first definition). Error: %s",
-              envEntry.getKey(), label, e.getMessage());
+              "Duplicate module_extension definition for '%s' in %s (keeping first definition)",
+              envEntry.getKey(), label);
         }
         StarlarkProtos.SymbolLocation symbolLocation = StarlarkProtos.SymbolLocation.newBuilder()
             .setName(moduleExtensionInfo.getExtensionName())
@@ -777,7 +792,8 @@ public class StarlarkEvaluator {
     // called something with kwargs.
     // resolveMacrosRule(ruleInfoMap, ruleInfoList, calledWithKwargs.build(),
     // userDefinedFunctionMap.build());
-    resolveFunctionMacros(ruleInfoMap, ruleInfoList, calledWithKwargs.build(), userDefinedFunctionMap.build());
+    resolveFunctionMacros(ruleInfoMap, ruleInfoList, calledWithKwargs.build(), userDefinedFunctionMap.build(),
+        seenRuleNames);
 
     // Add rules from loaded modules to the rule map
     // This allows detection of RuleMacros that forward to rules from other files
@@ -810,10 +826,10 @@ public class StarlarkEvaluator {
                   .getIdentifierFunction();
               if (ident.getAssignedName().equals(ruleName)) {
                 RuleInfo ruleInfo = wrapper.getRuleInfo().build();
-                try {
+                if (seenRuleNames.add(ruleName)) {
                   ruleInfoMap.put(ruleName, ruleInfo);
                   logger.atFine().log("Added rule '%s' from loaded module to rule map", ruleName);
-                } catch (IllegalArgumentException e) {
+                } else {
                   logger.atFine().log("Rule '%s' already in map, skipping", ruleName);
                 }
                 break;
@@ -828,10 +844,14 @@ public class StarlarkEvaluator {
     // (wrapper functions)
     // This must be done after all rules/aspects/macros have been added to their
     // respective maps
-    ImmutableMap<String, RuleInfo> builtRuleInfoMap = ruleInfoMap.build();
-    ImmutableMap<String, AspectInfo> builtAspectInfoMap = aspectInfoMap.build();
-    ImmutableMap<String, MacroInfo> builtMacroInfoMap = macroInfoMap.build();
-    ImmutableMap<String, StarlarkFunction> builtUserFunctionMap = userDefinedFunctionMap.build();
+    // buildKeepingLast() rather than build() because some .bzl files (re-exports,
+    // conditional rule definitions) legitimately define the same name twice in
+    // one file; the per-put try/catch above doesn't help because
+    // ImmutableMap.Builder defers duplicate detection to build().
+    ImmutableMap<String, RuleInfo> builtRuleInfoMap = ruleInfoMap.buildKeepingLast();
+    ImmutableMap<String, AspectInfo> builtAspectInfoMap = aspectInfoMap.buildKeepingLast();
+    ImmutableMap<String, MacroInfo> builtMacroInfoMap = macroInfoMap.buildKeepingLast();
+    ImmutableMap<String, StarlarkFunction> builtUserFunctionMap = userDefinedFunctionMap.buildKeepingLast();
 
     // Build inverted map: functionName -> [rules/macros that receive **kwargs from
     // this function]
@@ -1065,7 +1085,8 @@ public class StarlarkEvaluator {
       ImmutableMap.Builder<String, RuleInfo> ruleInfoMap,
       List<RuleInfoWrapper> ruleInfoList,
       ImmutableListMultimap<String, Collection<String>> rulesCalledWithKwargs,
-      ImmutableMap<String, StarlarkFunction> userFunctions) {
+      ImmutableMap<String, StarlarkFunction> userFunctions,
+      Set<String> seenRuleNames) {
 
     // Build a map from rule names to their info for lookup
     Map<String, RuleInfo> ruleNameToInfo = new HashMap<>();
@@ -1073,9 +1094,6 @@ public class StarlarkEvaluator {
       String name = ((PostAssignHookAssignableIdentifier) wrapper.getIdentifierFunction()).getAssignedName();
       ruleNameToInfo.put(name, wrapper.getRuleInfo().build());
     }
-
-    // Track which macro names we've already added to avoid duplicates
-    Set<String> addedMacros = new HashSet<>();
 
     for (String ruleName : rulesCalledWithKwargs.keys()) {
       if (!ruleNameToInfo.containsKey(ruleName)) {
@@ -1085,8 +1103,9 @@ public class StarlarkEvaluator {
       RuleInfo ruleInfo = ruleNameToInfo.get(ruleName);
       for (Collection<String> macroNames : rulesCalledWithKwargs.get(ruleName)) {
         for (String macroName : macroNames) {
-          // Skip if we've already added this macro name
-          if (addedMacros.contains(macroName)) {
+          // Skip if any caller (this method, the rule branch, the aliased-global
+          // branch) has already claimed this name in ruleInfoMap.
+          if (!seenRuleNames.add(macroName)) {
             logger.atFine().log("resolveFunctionMacros: skipping duplicate macro %s", macroName);
             continue;
           }
@@ -1110,7 +1129,6 @@ public class StarlarkEvaluator {
           }
 
           ruleInfoMap.put(macroName, macroInfo.build());
-          addedMacros.add(macroName);
           logger.atFine().log("global macro %s (rule from %s, called by function %s)", macroName, ruleName,
               function.getName());
         }
@@ -1134,7 +1152,7 @@ public class StarlarkEvaluator {
       for (Collection<String> callers : rulesCalledWithKwargs.get(name)) {
         for (String caller : callers) {
           // avoid duplicate entries
-          if (ruleInfoMap.build().containsKey(caller)) {
+          if (ruleInfoMap.buildKeepingLast().containsKey(caller)) {
             continue;
           }
 
@@ -1928,6 +1946,7 @@ public class StarlarkEvaluator {
         // List of known deprecated parameters that can be safely ignored
         String[] deprecatedParams = {
             "incompatible_use_toolchain_transition",
+            "single_file", // removed legacy attr.label() kwarg
             // Add other deprecated parameters here as needed
         };
 
@@ -1949,30 +1968,24 @@ public class StarlarkEvaluator {
 
       // Handle missing/renamed symbols in loaded files
       if (!shouldIgnore && errorMsg != null && errorMsg.contains("does not contain symbol")) {
-        // Get the top-level label (first element in pending set)
+        // The retry loop above (around line 1844) already tried to stub the missing
+        // symbol with a FakeDeepStructure and re-evaluate. If we reached this
+        // exception handler, either the same stub keeps failing (the consumer of
+        // the stub can't accept FakeDeepStructure) or max retries were exhausted.
+        // For both transitive and top-level loads, swallow the error and return
+        // whatever partial module we have. This is the same best-effort policy
+        // already applied to transitive loads — extending it to top-level files
+        // catches another ~80 cases per batch run where the entry .bzl loads a
+        // symbol that doesn't resolve. Constellate is a doc extractor, not a
+        // validator; the caller can detect missing data via the proto's `error`
+        // field and the partial Module result.
         Label topLevelLabel = pending.isEmpty() ? null : pending.iterator().next();
-
-        // For transitive loads (not the top-level file), ignore all "does not contain
-        // symbol" errors
-        // to allow best-effort extraction of the top-level file
-        if (topLevelLabel != null && !label.equals(topLevelLabel)) {
-          shouldIgnore = true;
-          ignoreReason = "missing symbol in transitive load (best-effort extraction): " + errorMsg;
-        } else {
-          // For the top-level file, only ignore known deprecated symbols
-          String[] deprecatedSymbols = {
-              "use_cc_toolchain", // Renamed/removed in rules_cc
-              // Add other deprecated symbols here as needed
-          };
-
-          for (String symbol : deprecatedSymbols) {
-            if (errorMsg.contains("'" + symbol + "'") || errorMsg.contains("\"" + symbol + "\"")) {
-              shouldIgnore = true;
-              ignoreReason = "missing/renamed symbol: " + errorMsg;
-              break;
-            }
-          }
-        }
+        boolean isTransitive = topLevelLabel != null && !label.equals(topLevelLabel);
+        shouldIgnore = true;
+        ignoreReason = (isTransitive
+            ? "missing symbol in transitive load (best-effort extraction): "
+            : "missing symbol in top-level file (best-effort extraction): ")
+            + errorMsg;
       }
 
       if (shouldIgnore) {
@@ -2321,24 +2334,28 @@ public class StarlarkEvaluator {
     // Declare a fake implementation of select that just returns the first
     // value in the dict. (This program is forbidden from depending on the real
     // implementation of 'select' in lib.packages, and so the hacks multiply.)
+    // For an empty dict — which happens when constellate stubbed the argument
+    // via FakeDeepStructure or similar — fall through to a FakeDeepStructure
+    // placeholder so downstream code keeps evaluating.
     env.put("select", new StarlarkCallable() {
       @Override
       public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs) throws EvalException {
-        // Accept dict as first positional argument, return first value
-        if (args.size() > 0) {
+        if (args.size() > 0 && args.get(0) instanceof Dict) {
           for (Map.Entry<?, ?> e : ((Dict<?, ?>) args.get(0)).entrySet()) {
             return e.getValue();
           }
         }
-        throw Starlark.errorf("select: empty dict");
+        return FakeDeepStructure.create("select_result");
       }
 
       @Override
       public Object fastcall(StarlarkThread thread, Object[] positional, Object[] named) throws EvalException {
-        for (Map.Entry<?, ?> e : ((Dict<?, ?>) positional[0]).entrySet()) {
-          return e.getValue();
+        if (positional.length > 0 && positional[0] instanceof Dict) {
+          for (Map.Entry<?, ?> e : ((Dict<?, ?>) positional[0]).entrySet()) {
+            return e.getValue();
+          }
         }
-        throw Starlark.errorf("select: empty dict");
+        return FakeDeepStructure.create("select_result");
       }
 
       @Override

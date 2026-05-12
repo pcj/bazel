@@ -45,7 +45,13 @@ public final class RemoteStarlarkServer {
             throws IOException {
         this.semanticsOptions = semanticsOptions;
         this.starlarkOptions = starlarkOptions;
-        this.starlarkServer = new StarlarkServer(this.semanticsOptions.toStarlarkSemantics());
+        // Enable experimental flags that some rules_* modules require during evaluation
+        // (e.g., repository_rule(remotable=True)). Constellate is only extracting docs,
+        // so any "experimental" gating is purely a noise source.
+        net.starlark.java.eval.StarlarkSemantics semantics = this.semanticsOptions.toStarlarkSemantics().toBuilder()
+                .setBool(BuildLanguageOptions.EXPERIMENTAL_REPO_REMOTE_EXEC, true)
+                .build();
+        this.starlarkServer = new StarlarkServer(semantics);
     }
 
     public Server startServer() throws IOException {
