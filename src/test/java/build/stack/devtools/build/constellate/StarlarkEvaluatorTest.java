@@ -582,4 +582,72 @@ public class StarlarkEvaluatorTest {
     assertTrue("_basename should still be emitted under its private name",
         fnByName.containsKey("_basename"));
   }
+
+  // ===== Tier 1 + Tier 2 robustness fixes =====
+  // Each test exercises a specific class of evaluation error seen in the
+  // bcr-frontend batch run (see CONSTELLATE_ERROR_TRIAGE_NEXT_STEPS.md).
+  // The contract is "evaluation must not throw" — the resulting Module may be
+  // empty or partial; consumers detect that via Module.error.
+
+  /** Tier 2.D — fake select() must accept an empty dict instead of throwing. */
+  @Test
+  public void testEmptySelectTolerated() throws Exception {
+    TestModuleInfo moduleInfo = evaluateFile("empty_select_test.bzl");
+    assertNotNull(moduleInfo);
+    boolean hasFn = false;
+    for (StarlarkFunctionInfo fn : moduleInfo.getFuncInfoList()) {
+      if (fn.getFunctionName().equals("some_function")) {
+        hasFn = true;
+        break;
+      }
+    }
+    assertTrue("some_function should be extracted even when an empty select() preceded it",
+        hasFn);
+  }
+
+  /** Tier 1.J — two globals aliased to the same rule callable must not crash buildKeepingLast(). */
+  @Test
+  public void testDuplicateRuleNameKept() throws Exception {
+    TestModuleInfo moduleInfo = evaluateFile("duplicate_rule_name_test.bzl");
+    assertNotNull(moduleInfo);
+    // Exactly one rule entry survives — buildKeepingLast() de-dups by rule_name.
+    int countMatching = 0;
+    for (RuleInfo r : moduleInfo.getRuleInfoList()) {
+      if (r.getRuleName().equals("_my_rule")) {
+        countMatching++;
+      }
+    }
+    assertEquals("exactly one entry kept for the duplicate rule_name", 1, countMatching);
+  }
+
+  /** Tier 1.I — attr.label(single_file=...) must be soft-failed via deprecatedParams. */
+  @Test
+  public void testSingleFileKwargIgnored() throws Exception {
+    // The bzl raises `got unexpected keyword argument 'single_file'` partway through
+    // top-level evaluation. The retry path swallows it. Globals bound before the
+    // failure survive; nothing after does.
+    TestModuleInfo moduleInfo = evaluateFile("single_file_kwarg_test.bzl");
+    assertNotNull(moduleInfo);
+    // No rule entry — the rule() call aborted before binding.
+    int legacyRuleCount = 0;
+    for (RuleInfo r : moduleInfo.getRuleInfoList()) {
+      if (r.getRuleName().equals("legacy_rule")) {
+        legacyRuleCount++;
+      }
+    }
+    assertEquals("legacy_rule must not have been added (the rule() call failed)",
+        0, legacyRuleCount);
+  }
+
+  /** Tier 2.C — a top-level load() that exhausts retries with a "does not contain symbol" error must soft-fail. */
+  @Test
+  public void testTopLevelMissingSymbolSoftFail() throws Exception {
+    // The testdata bzl loads 11 missing symbols from load_test_lib.bzl. The retry
+    // loop stubs the first 10 and breaks on the 11th when retryCount hits
+    // MAX_RETRIES_PER_FILE. The held exception still carries a `does not contain
+    // symbol` message, which Tier 2.C now soft-fails at top-level rather than
+    // rethrowing. The test passes if eval() returns without throwing.
+    TestModuleInfo moduleInfo = evaluateFile("top_level_missing_symbol_test.bzl");
+    assertNotNull(moduleInfo);
+  }
 }
