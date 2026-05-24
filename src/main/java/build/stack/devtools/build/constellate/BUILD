@@ -17,6 +17,7 @@ java_library(
     name = "evaluator_lib",
     srcs = [
         "BuildFileEvaluator.java",
+        "BuiltinCatalog.java",
         "FilesystemFileAccessor.java",
         "HybridFileAccessor.java",
         "RealObjectEnhancer.java",
@@ -25,6 +26,7 @@ java_library(
         "SystemOutEventHandler.java",
     ],
     resources = [
+        "//src/main/java/com/google/devtools/build/lib:gen_api_proto",
         "//src/main/starlark/docgen:gen_be_cpp_stardoc_proto",
         "//src/main/starlark/docgen:gen_be_java_stardoc_proto",
         "//src/main/starlark/docgen:gen_be_objc_stardoc_proto",
@@ -57,6 +59,7 @@ java_library(
         "//src/main/java/net/starlark/java/lib/json",
         "//src/main/java/net/starlark/java/syntax",
         "//src/main/java/net/starlark/java/types",
+        "//src/main/protobuf:builtin_java_proto",
         "//src/main/protobuf:stardoc_output_java_proto",
         "//third_party:flogger",
         "//third_party:guava",

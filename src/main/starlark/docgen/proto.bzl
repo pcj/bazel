@@ -23,7 +23,11 @@ load("@com_google_protobuf//bazel/private:proto_lang_toolchain_rule.bzl", "proto
 load("@com_google_protobuf//bazel/private:proto_library_rule.bzl", _proto_library = "proto_library")  # buildifier: disable=bzl-visibility
 load("@com_google_protobuf//bazel/private:proto_toolchain_rule.bzl", "proto_toolchain")  # buildifier: disable=bzl-visibility
 
-proto_library = _proto_library 
+# Note: `proto_library` is intentionally not re-exported at the top level here.
+# BuildDocCollector rejects rule symbols that aren't wrapped in a *_rules struct
+# (so it can infer the rule type from the struct name). The symbol is still
+# available below via `library_rules.proto_library`, which is the canonical
+# documented export path for the build encyclopedia.
 
 binary_rules = struct()
 

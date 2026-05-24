@@ -4,6 +4,7 @@ syntax = "proto3";
 // and services for querying them.
 package build.stack.starlark.v1beta1;
 
+import "src/main/protobuf/builtin.proto";
 import "src/main/protobuf/stardoc_output.proto";
 
 option java_package = "build.stack.starlark.v1beta1";
@@ -366,6 +367,29 @@ message ModuleInfoRequest {
     string module_content = 7;
 }
 
+// BuiltinInfoRequest is intentionally empty in v1. Future fields could add
+// ApiContext filtering (BZL-only / BUILD-only) or per-module gating.
+message BuiltinInfoRequest { }
+
+// BuiltinInfoResponse carries Bazel's bundled API catalog in two complementary
+// forms — see the BuiltinInfo RPC docs below.
+message BuiltinInfoResponse {
+    // Verbatim content of bazel-bin/.../builtin.pb produced by
+    // //src/main/java/com/google/devtools/build/lib:gen_api_proto.
+    // Provides all built-in Starlark types, top-level globals, and native
+    // rules (lossy on attribute detail — only attribute names + isMandatory).
+    builtin.Builtins builtins = 1;
+    // The six stardoc_output.ModuleInfo protos produced by
+    // //src/main/starlark/docgen:gen_be_{cpp,java,objc,proto,python,shell}
+    // _stardoc_proto. Each carries full RuleInfo / AttributeInfo for the
+    // Starlark-defined rules in one language module.
+    repeated stardoc_output.ModuleInfo module_info = 2;
+    // Parallel to module_info — a short label naming each ModuleInfo's
+    // source ("cpp", "java", "objc", "proto", "python", "shell"). Same order,
+    // same length as module_info.
+    repeated string module_info_source = 3;
+}
+
 message PingRequest { }
 
 message PingResponse { }
@@ -377,6 +401,9 @@ service Starlark {
     rpc ModuleInfo(ModuleInfoRequest) returns (Module) {}
     // PackageInfo extracts target/macro/load info from a BUILD or BUILD.bazel file.
     rpc PackageInfo(PackageInfoRequest) returns (Package) {}
+    // BuiltinInfo returns Bazel's bundled API catalog: built-in Starlark
+    // types, top-level globals, native rules, and language-module rules.
+    rpc BuiltinInfo(BuiltinInfoRequest) returns (BuiltinInfoResponse) {}
     // Ping allows connectivity checks
     rpc Ping(PingRequest) returns (PingResponse) {}
 }

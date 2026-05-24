@@ -17,6 +17,8 @@ import build.stack.devtools.build.constellate.rendering.DocstringParseException;
 import build.stack.starlark.v1beta1.StarlarkGrpc.StarlarkImplBase;
 import build.stack.starlark.v1beta1.StarlarkProtos.Aspect;
 import build.stack.starlark.v1beta1.StarlarkProtos.Attribute;
+import build.stack.starlark.v1beta1.StarlarkProtos.BuiltinInfoRequest;
+import build.stack.starlark.v1beta1.StarlarkProtos.BuiltinInfoResponse;
 import build.stack.starlark.v1beta1.StarlarkProtos.Macro;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleExtension;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleExtensionTagClass;
@@ -147,6 +149,18 @@ final class StarlarkServer extends StarlarkImplBase {
 
         moduleObserver.onNext(module.build());
         moduleObserver.onCompleted();
+    }
+
+    @Override
+    public void builtinInfo(BuiltinInfoRequest request, StreamObserver<BuiltinInfoResponse> observer) {
+        logger.atInfo().log("Processing builtin info request");
+        try {
+            observer.onNext(BuiltinCatalog.get());
+            observer.onCompleted();
+        } catch (Exception e) {
+            logger.atWarning().withCause(e).log("Unexpected error in BuiltinInfo request");
+            observer.onError(StatusUtils.internalError(e));
+        }
     }
 
     @Override
