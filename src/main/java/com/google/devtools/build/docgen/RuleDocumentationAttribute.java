@@ -248,8 +248,21 @@ public class RuleDocumentationAttribute
   /** Returns the attribute's default value, or null if none set. */
   @Nullable
   public String getDefaultValue() {
-    // Strings are stored as "foo". Remove the surrounding quotes.
-    return defaultValue == null ? null : defaultValue.substring(1, defaultValue.length() - 1);
+    if (defaultValue == null) {
+      return null;
+    }
+    // Most string-typed values are stored as "foo" (surrounded by literal
+    // double quotes). Strip the quotes when present. Other Starlark reprs
+    // (e.g. tri-state "-1"/"0"/"1", booleans "True"/"False", lists "[...]")
+    // are bare and must be returned as-is — the old "always strip first and
+    // last char" logic threw StringIndexOutOfBoundsException on length-1
+    // values like the tri-state encoding.
+    if (defaultValue.length() >= 2
+        && defaultValue.charAt(0) == '"'
+        && defaultValue.charAt(defaultValue.length() - 1) == '"') {
+      return defaultValue.substring(1, defaultValue.length() - 1);
+    }
+    return defaultValue;
   }
 
   /**
@@ -287,6 +300,12 @@ public class RuleDocumentationAttribute
   /** Returns whether the param is required or optional. */
   public boolean isMandatory() {
     return mandatory;
+  }
+
+  /** Returns the attribute's type, or null if unknown (e.g., for predefined common attributes). */
+  @Nullable
+  public Type<?> getType() {
+    return type;
   }
 
   /** Returns a string containing the synopsis for this attribute. */
