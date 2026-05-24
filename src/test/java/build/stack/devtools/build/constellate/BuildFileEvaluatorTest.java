@@ -65,10 +65,10 @@ public class BuildFileEvaluatorTest {
     assertEquals(true, pkg.getBindingOrThrow("USE_DEBUG").getBool());
 
     // ----- targets in source order -----
-    assertEquals("three top-level rule calls in source order", 3, pkg.getTargetCount());
+    assertEquals("five top-level rule calls in source order", 5, pkg.getTargetCount());
 
     Target foo = pkg.getTarget(0);
-    assertEquals("cc_library", foo.getRule());
+    assertEquals("cc_library", foo.getKind());
     assertEquals("foo", foo.getName());
     assertFalse("cc_library is a native rule, not a macro", foo.getIsMacro());
     // srcs/hdrs/deps should all be captured as Attribute entries
@@ -92,13 +92,54 @@ public class BuildFileEvaluatorTest {
     assertTrue("deps attribute (with no value) still captured", sawDeps);
 
     Target main = pkg.getTarget(1);
-    assertEquals("cc_binary", main.getRule());
+    assertEquals("cc_binary", main.getKind());
     assertEquals("main", main.getName());
     assertFalse("cc_binary is a native rule", main.getIsMacro());
 
     Target fromMacro = pkg.getTarget(2);
-    assertEquals("lib_rule", fromMacro.getRule());
+    assertEquals("lib_rule", fromMacro.getKind());
     assertEquals("from_macro", fromMacro.getName());
     assertTrue("lib_rule was loaded from a .bzl, so is_macro=true", fromMacro.getIsMacro());
+
+    // ----- glob() attribute captured as ValueCall -----
+    Target allBzls = pkg.getTarget(3);
+    assertEquals("filegroup", allBzls.getKind());
+    assertEquals("all_bzls", allBzls.getName());
+    Value srcs = findAttribute(allBzls, "srcs");
+    assertNotNull("srcs attribute on filegroup", srcs);
+    assertEquals("srcs = glob(...) captured as Call", Value.ValueCase.CALL, srcs.getValueCase());
+    assertEquals("glob", srcs.getCall().getFunctionName());
+    assertEquals("one positional arg (the include pattern list)", 1, srcs.getCall().getPositionalCount());
+    Value globPatterns = srcs.getCall().getPositional(0);
+    assertEquals(Value.ValueCase.LIST, globPatterns.getValueCase());
+    assertEquals("*.bzl", globPatterns.getList().getValue(0).getString());
+
+    // ----- select() attribute captured as ValueCall with ValueDict positional -----
+    Target selectable = pkg.getTarget(4);
+    assertEquals("cc_library", selectable.getKind());
+    assertEquals("selectable", selectable.getName());
+    Value deps = findAttribute(selectable, "deps");
+    assertNotNull("deps attribute on selectable", deps);
+    assertEquals(Value.ValueCase.CALL, deps.getValueCase());
+    assertEquals("select", deps.getCall().getFunctionName());
+    assertEquals(1, deps.getCall().getPositionalCount());
+    Value selectDict = deps.getCall().getPositional(0);
+    assertEquals("select's positional arg is a dict", Value.ValueCase.DICT, selectDict.getValueCase());
+    assertEquals("two select branches", 2, selectDict.getDict().getEntryCount());
+    assertEquals("//conditions:linux", selectDict.getDict().getEntry(0).getKey().getString());
+    assertEquals("//deps:linux_extra",
+        selectDict.getDict().getEntry(0).getValue().getList().getValue(0).getString());
+    assertEquals("//conditions:default", selectDict.getDict().getEntry(1).getKey().getString());
+    assertEquals("default branch is an empty list",
+        0, selectDict.getDict().getEntry(1).getValue().getList().getValueCount());
+  }
+
+  private static Value findAttribute(Target target, String name) {
+    for (int i = 0; i < target.getAttributeCount(); i++) {
+      if (target.getAttribute(i).getName().equals(name)) {
+        return target.getAttribute(i).getValue();
+      }
+    }
+    return null;
   }
 }

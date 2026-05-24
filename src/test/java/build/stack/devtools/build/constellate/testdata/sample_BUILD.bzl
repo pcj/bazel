@@ -32,3 +32,19 @@ lib_rule(
     name = "from_macro",
     value = "x",
 )
+
+# Exercises Value.call capture for glob().
+filegroup(
+    name = "all_bzls",
+    srcs = glob(["*.bzl"]),
+    visibility = ["//visibility:public"],
+)
+
+# Exercises Value.call capture for select() with Value.dict argument.
+cc_library(
+    name = "selectable",
+    deps = select({
+        "//conditions:linux": ["//deps:linux_extra"],
+        "//conditions:default": [],
+    }),
+)

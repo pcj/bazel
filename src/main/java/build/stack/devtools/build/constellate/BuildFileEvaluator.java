@@ -173,7 +173,7 @@ public final class BuildFileEvaluator {
     // callable loaded from a .bzl, a macro loaded from a .bzl, or a BUILD-only
     // helper like exports_files / licenses / package_group.
     StarlarkProtos.Target.Builder target = StarlarkProtos.Target.newBuilder()
-        .setRule(name)
+        .setKind(name)
         .setIsMacro(loadedNames.contains(name))
         .setLocation(symbolLocation(name, call.getStartLocation()));
 
@@ -276,12 +276,57 @@ public final class BuildFileEvaluator {
       return StarlarkProtos.Value.newBuilder().setList(lb.build()).build();
     }
     if (expr instanceof DictExpression) {
-      // No ValueDict variant in the proto today; return null so the field is
-      // omitted from the attribute. Adding ValueDict is tracked separately.
-      return null;
+      DictExpression dict = (DictExpression) expr;
+      StarlarkProtos.ValueDict.Builder db = StarlarkProtos.ValueDict.newBuilder();
+      for (DictExpression.Entry entry : dict.getEntries()) {
+        StarlarkProtos.Value k = expressionToValue(entry.getKey());
+        StarlarkProtos.Value v = expressionToValue(entry.getValue());
+        StarlarkProtos.DictEntry.Builder eb = StarlarkProtos.DictEntry.newBuilder();
+        if (k != null) {
+          eb.setKey(k);
+        }
+        if (v != null) {
+          eb.setValue(v);
+        }
+        db.addEntry(eb.build());
+      }
+      return StarlarkProtos.Value.newBuilder().setDict(db.build()).build();
     }
-    // CallExpression (e.g., `select({...})`, `glob(...)`), comprehensions,
-    // BinaryOperatorExpression, lambdas — all unresolvable at AST level.
+    if (expr instanceof CallExpression) {
+      CallExpression call = (CallExpression) expr;
+      Expression callee = call.getFunction();
+      if (!(callee instanceof Identifier)) {
+        // Dotted callees like `native.glob(...)` — leave unresolved; the
+        // caller couldn't anchor them anyway without resolving `native`.
+        return null;
+      }
+      StarlarkProtos.ValueCall.Builder cb = StarlarkProtos.ValueCall.newBuilder()
+          .setFunctionName(((Identifier) callee).getName());
+      for (Argument arg : call.getArguments()) {
+        if (arg instanceof Argument.Positional) {
+          StarlarkProtos.Value v = expressionToValue(arg.getValue());
+          if (v != null) {
+            cb.addPositional(v);
+          }
+        } else if (arg instanceof Argument.Keyword) {
+          Argument.Keyword kw = (Argument.Keyword) arg;
+          StarlarkProtos.TargetAttribute.Builder ka = StarlarkProtos.TargetAttribute.newBuilder()
+              .setName(kw.getName())
+              .setLocation(symbolLocation(kw.getName(), kw.getIdentifier().getStartLocation()));
+          StarlarkProtos.Value kv = expressionToValue(kw.getValue());
+          if (kv != null) {
+            ka.setValue(kv);
+          }
+          cb.addKwarg(ka.build());
+        }
+        // Argument.Star / Argument.StarStar splats are rare in attribute
+        // values; skipped.
+      }
+      return StarlarkProtos.Value.newBuilder().setCall(cb.build()).build();
+    }
+    // Comprehensions, BinaryOperatorExpression, ConditionalExpression,
+    // lambdas — still unresolvable at AST level. Tracked as follow-up if
+    // a UI use case appears.
     return null;
   }
 
