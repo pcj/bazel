@@ -289,7 +289,24 @@ public class ApiExporter {
     // to be added separately.
     callable.addParam(newParam("name", true));
     for (RuleDocumentationAttribute attr : rule.getAttributes()) {
-      callable.addParam(newParam(attr.getAttributeName(), attr.isMandatory()));
+      Param.Builder param = newParam(attr.getAttributeName(), attr.isMandatory());
+      // Populate type/doc/default_value so consumers (Cider, constellate's
+      // BuiltinInfo RPC, etc.) get the same fidelity for native rules
+      // (genrule, filegroup, …) that stardoc protos already provide for
+      // Starlark-defined rules. Note: getHtmlDocumentation() returns HTML
+      // markup, matching the encyclopedia's existing convention.
+      if (attr.getType() != null) {
+        param.setType(attr.getType().toString());
+      }
+      String defaultValue = attr.getDefaultValue();
+      if (defaultValue != null && !defaultValue.isEmpty()) {
+        param.setDefaultValue(defaultValue);
+      }
+      String doc = attr.getHtmlDocumentation();
+      if (doc != null && !doc.isEmpty()) {
+        param.setDoc(doc);
+      }
+      callable.addParam(param);
     }
     value.setCallable(callable);
     return value;

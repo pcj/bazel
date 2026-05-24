@@ -17,12 +17,16 @@ import build.stack.devtools.build.constellate.rendering.DocstringParseException;
 import build.stack.starlark.v1beta1.StarlarkGrpc.StarlarkImplBase;
 import build.stack.starlark.v1beta1.StarlarkProtos.Aspect;
 import build.stack.starlark.v1beta1.StarlarkProtos.Attribute;
+import build.stack.starlark.v1beta1.StarlarkProtos.BuiltinInfoRequest;
+import build.stack.starlark.v1beta1.StarlarkProtos.BuiltinInfoResponse;
 import build.stack.starlark.v1beta1.StarlarkProtos.Macro;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleExtension;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleExtensionTagClass;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleInfoRequest;
 import build.stack.starlark.v1beta1.StarlarkProtos.Module;
 import build.stack.starlark.v1beta1.StarlarkProtos.ModuleCategory;
+import build.stack.starlark.v1beta1.StarlarkProtos.Package;
+import build.stack.starlark.v1beta1.StarlarkProtos.PackageInfoRequest;
 import build.stack.starlark.v1beta1.StarlarkProtos.PingRequest;
 import build.stack.starlark.v1beta1.StarlarkProtos.PingResponse;
 import build.stack.starlark.v1beta1.StarlarkProtos.Provider;
@@ -145,6 +149,95 @@ final class StarlarkServer extends StarlarkImplBase {
 
         moduleObserver.onNext(module.build());
         moduleObserver.onCompleted();
+    }
+
+    @Override
+    public void builtinInfo(BuiltinInfoRequest request, StreamObserver<BuiltinInfoResponse> observer) {
+        logger.atInfo().log("Processing builtin info request");
+        try {
+            observer.onNext(BuiltinCatalog.get());
+            observer.onCompleted();
+        } catch (Exception e) {
+            logger.atWarning().withCause(e).log("Unexpected error in BuiltinInfo request");
+            observer.onError(StatusUtils.internalError(e));
+        }
+    }
+
+    @Override
+    public void packageInfo(PackageInfoRequest request, StreamObserver<Package> observer) {
+        logger.atInfo().log("Processing package: %s", request.getTargetFileLabel());
+
+        if (Strings.isNullOrEmpty(request.getTargetFileLabel())) {
+            observer.onError(StatusUtils.invalidArgumentError(
+                    new IllegalArgumentException("PackageInfoRequest requires target_file_label")));
+            return;
+        }
+
+        // Parse the target file label (absolute or relative to request.rel).
+        Label targetFileLabel;
+        try {
+            String s = request.getTargetFileLabel();
+            if (s.startsWith("@") || s.startsWith("//")) {
+                targetFileLabel = Label.parseCanonical(s);
+            } else {
+                String rel = request.getRel();
+                if (rel.isEmpty()) {
+                    rel = "//";
+                } else if (!rel.startsWith("//")) {
+                    rel = "//" + rel;
+                }
+                targetFileLabel = Label.parseCanonical(rel + ":" + s);
+            }
+        } catch (LabelSyntaxException e) {
+            observer.onError(StatusUtils.invalidArgumentError(e));
+            return;
+        }
+
+        try {
+            // Choose file accessor: hybrid when file_content is supplied.
+            StarlarkFileAccessor fileAccessor = new FilesystemFileAccessor();
+            if (!Strings.isNullOrEmpty(request.getFileContent())) {
+                String workspaceRoot = targetFileLabel.getWorkspaceRootForStarlarkOnly(semantics);
+                String targetFilePath = workspaceRoot.isEmpty()
+                        ? targetFileLabel.toPathFragment().toString()
+                        : workspaceRoot + "/" + targetFileLabel.toPathFragment().toString();
+                fileAccessor = new HybridFileAccessor(
+                        targetFilePath,
+                        request.getFileContent(),
+                        fileAccessor);
+            }
+
+            // BuildFileEvaluator is execution-free and AST-only; we only need a
+            // file accessor and the search roots. depRoots aren't strictly needed
+            // for v1 since we don't resolve transitive .bzl loads — but we accept
+            // them in the request for forward compatibility.
+            BuildFileEvaluator evaluator = new BuildFileEvaluator(fileAccessor);
+
+            // Find the file using a StarlarkEvaluator helper for consistent
+            // label→path resolution semantics.
+            StarlarkEvaluator labelResolver = new StarlarkEvaluator(
+                    semantics, fileAccessor, ImmutableList.copyOf(request.getDepRootsList()));
+            Path labelPath = labelResolver.pathOfLabel(targetFileLabel);
+            ParserInput input = labelResolver.getInputSource(labelPath.toString());
+
+            Package pkg = evaluator.eval(input, targetFileLabel);
+            observer.onNext(pkg);
+            observer.onCompleted();
+        } catch (java.nio.file.NoSuchFileException | java.io.FileNotFoundException e) {
+            logger.atInfo().withCause(e).log("File not found in PackageInfo request: %s",
+                    request.getTargetFileLabel());
+            observer.onError(StatusUtils.notFoundError(e));
+        } catch (EvalException e) {
+            observer.onError(StatusUtils.invalidArgumentError(e));
+        } catch (IOException e) {
+            logger.atWarning().withCause(e).log("I/O error in PackageInfo request: %s",
+                    request.getTargetFileLabel());
+            observer.onError(StatusUtils.internalError(e));
+        } catch (Exception e) {
+            logger.atWarning().withCause(e).log("Unexpected error in PackageInfo request: %s",
+                    request.getTargetFileLabel());
+            observer.onError(StatusUtils.internalError(e));
+        }
     }
 
     private void evalModuleInfo(ModuleInfoRequest request, Module.Builder module) throws InterruptedException,
